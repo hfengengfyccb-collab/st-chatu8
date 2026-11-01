@@ -80,13 +80,3 @@
     opacity: 0.8;
     font-weight: 600;
 }
-/* ComfyUI 认证状态文字 */
-.st-chatu8-auth-status {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.9em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    opacity: 0.85;
-}
