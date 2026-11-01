@@ -2479,6 +2479,8 @@ var init_config = __esm({
       sdUrl: "http://localhost:7860",
       st_chatu8_sd_auth: "",
       comfyuiUrl: "http://localhost:8188",
+      // ComfyUI 认证：支持 "用户名:密码"（自动拼 Basic）、纯 token（自动拼 Bearer）、或直接填 "Basic xxx"/"Bearer xxx"
+      comfyui_auth: "",
       comfyui_max_concurrency: 10,
       comfyui_timeout: 1800,
       // RunningHub 配置
@@ -8833,6 +8835,69 @@ function stringToBase64(str) {
 function getsdAuth() {
   return `Basic ${stringToBase64(extension_settings3[extensionName].st_chatu8_sd_auth)}`;
 }
+// ===== ComfyUI 认证支持（远程/带鉴权的 ComfyUI 端点）=====
+// 读取设置里的 comfyui_auth，归一化成可直接放进 Authorization 头的值：
+//   "用户名:密码"  -> Basic base64(user:pass)
+//   "Basic xxx" / "Bearer xxx" -> 原样使用
+//   其它非空字符串 -> 当作 Bearer token
+function getComfyAuthValue() {
+  const raw = extension_settings3[extensionName]?.comfyui_auth;
+  if (!raw || typeof raw !== "string") return "";
+  const value = raw.trim();
+  if (!value) return "";
+  if (/^(Basic|Bearer|Token)\s+/i.test(value)) return value;
+  if (value.includes(":")) return `Basic ${stringToBase64(value)}`;
+  return `Bearer ${value}`;
+}
+// 收集所有可能指向 ComfyUI 的 origin：主地址 + 每个工作流档案里的地址
+function collectComfyOrigins() {
+  const settings = extension_settings3[extensionName] || {};
+  const candidates = [settings.comfyuiUrl];
+  try {
+    Object.values(settings.comfyui_profiles || {}).forEach((profile) => {
+      if (profile && typeof profile === "object") candidates.push(profile.comfyuiUrl);
+    });
+  } catch (err) {
+    // 档案结构异常时忽略，只用主地址
+  }
+  const origins = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    try {
+      origins.add(new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`).origin);
+    } catch (err) {
+      // 非法地址跳过
+    }
+  }
+  return origins;
+}
+// 给所有发往 ComfyUI 的请求自动补 Authorization 头。
+// 用统一包装而不是逐个调用点修改，是为了覆盖 /prompt、/upload/image、/history、/queue、
+// /mgpu/*、/api/interrupt 等全部现有接口，以及插件将来新增的接口。
+const __chatu8OriginalFetch = window.fetch.bind(window);
+window.fetch = function chatu8FetchWithComfyAuth(input, init) {
+  try {
+    const authValue = getComfyAuthValue();
+    if (authValue) {
+      const rawUrl = typeof input === "string" ? input : input && input.url ? input.url : "";
+      if (rawUrl) {
+        const absoluteUrl = new URL(rawUrl, window.location.href);
+        if (collectComfyOrigins().has(absoluteUrl.origin)) {
+          const headers = new Headers(
+            (init && init.headers) || (input && input.headers) || void 0
+          );
+          if (!headers.has("Authorization")) headers.set("Authorization", authValue);
+          init = Object.assign({}, init, { headers });
+        }
+      }
+    }
+  } catch (err) {
+    // 任何异常都退回原始请求，避免影响其它扩展
+  }
+  return __chatu8OriginalFetch(input, init);
+};
 async function getSDMode(sdurl) {
   try {
     const url = new URL(sdurl);
@@ -112437,7 +112502,7 @@ async function initUI({ check_update: check_update2 }) {
       settings2.theme_id = "\u9ED8\u8BA4-\u767D\u5929";
     }
     applyTheme(settings2.themes[settings2.theme_id]);
-    const mainKeys = ["scriptEnabled", "helpTipsEnabled", "disablePluginToast", "newlineFixEnabled", "mode", "client", "displayMode", "heavyFrontendMode", "insertOriginalText", "dbclike", "collapseImage", "zidongdianji", "zidongdianji2", "longPressToEdit", "clickToPreview", "startTag", "endTag", "cache", "sdUrl", "st_chatu8_sd_auth", "comfyuiUrl", "comfyui_max_concurrency", "comfyui_timeout", "novelaiApi", "novelaisite", "novelaiOtherSite", "enableCloudQueue", "cloudQueueUrl", "cloudQueueGreeting", "showQueueGreeting", "novelaimode", "novelai_v5_effort", "novelai_sampler", "Schedule", "novelai_v5_schedule", "nai3Scale", "cfg_rescale", "AI_use_coords", "sm", "dyn", "nai3Variety", "nai3Deceisp", "sd_cwidth", "sd_cheight", "sd_csteps", "sd_cseed", "sdCfgScale", "restoreFaces", "novelai_width", "novelai_height", "novelai_steps", "novelai_seed", "nai3VibeTransfer", "enableVibeGroupTransfer", "randomVibeGroup", "normalizeRefStrength", "InformationExtracted", "ReferenceStrength", "nai3CharRef", "nai3StylePerception", "comfyui_width", "comfyui_height", "comfyui_steps", "comfyui_seed", "cfg_comfyui", "worker", "ipa", "c_fenwei", "c_xijie", "c_quanzhong", "c_idquanzhong", "AQT_sd", "UCP_sd", "AQT_novelai", "UCP_novelai", "AQT_comfyui", "UCP_comfyui", "addFurryDataset", "sd_cupscale_factor", "sd_chires_fix", "sd_chires_steps", "sd_cdenoising_strength", "sd_cclip_skip", "sd_cadetailer", "worldBookEnabled", "ai_temperature", "ai_top_p", "ai_presence_penalty", "ai_frequency_penalty", "ai_stream", "ai_private", "ai_token", "vocabulary_search_startswith", "vocabulary_search_limit", "vocabulary_search_sort", "enablePregen", "autoLLMImageGen", "randomYushe", "aiAutonomousResolution", "videoChannel", "imageAlignment", "imageSizeScale", "imageGenInterval", "translation_system_prompt", "ai_test_system", "ai_test_user", "ai_test_output", "jiuguanchucun", "vibeJiuguanchucun", "convertToJpegStorage", "weilin_lora_fix"];
+    const mainKeys = ["scriptEnabled", "helpTipsEnabled", "disablePluginToast", "newlineFixEnabled", "mode", "client", "displayMode", "heavyFrontendMode", "insertOriginalText", "dbclike", "collapseImage", "zidongdianji", "zidongdianji2", "longPressToEdit", "clickToPreview", "startTag", "endTag", "cache", "sdUrl", "st_chatu8_sd_auth", "comfyuiUrl", "comfyui_auth", "comfyui_max_concurrency", "comfyui_timeout", "novelaiApi", "novelaisite", "novelaiOtherSite", "enableCloudQueue", "cloudQueueUrl", "cloudQueueGreeting", "showQueueGreeting", "novelaimode", "novelai_v5_effort", "novelai_sampler", "Schedule", "novelai_v5_schedule", "nai3Scale", "cfg_rescale", "AI_use_coords", "sm", "dyn", "nai3Variety", "nai3Deceisp", "sd_cwidth", "sd_cheight", "sd_csteps", "sd_cseed", "sdCfgScale", "restoreFaces", "novelai_width", "novelai_height", "novelai_steps", "novelai_seed", "nai3VibeTransfer", "enableVibeGroupTransfer", "randomVibeGroup", "normalizeRefStrength", "InformationExtracted", "ReferenceStrength", "nai3CharRef", "nai3StylePerception", "comfyui_width", "comfyui_height", "comfyui_steps", "comfyui_seed", "cfg_comfyui", "worker", "ipa", "c_fenwei", "c_xijie", "c_quanzhong", "c_idquanzhong", "AQT_sd", "UCP_sd", "AQT_novelai", "UCP_novelai", "AQT_comfyui", "UCP_comfyui", "addFurryDataset", "sd_cupscale_factor", "sd_chires_fix", "sd_chires_steps", "sd_cdenoising_strength", "sd_cclip_skip", "sd_cadetailer", "worldBookEnabled", "ai_temperature", "ai_top_p", "ai_presence_penalty", "ai_frequency_penalty", "ai_stream", "ai_private", "ai_token", "vocabulary_search_startswith", "vocabulary_search_limit", "vocabulary_search_sort", "enablePregen", "autoLLMImageGen", "randomYushe", "aiAutonomousResolution", "videoChannel", "imageAlignment", "imageSizeScale", "imageGenInterval", "translation_system_prompt", "ai_test_system", "ai_test_user", "ai_test_output", "jiuguanchucun", "vibeJiuguanchucun", "convertToJpegStorage", "weilin_lora_fix"];
     mainKeys.forEach((key) => {
       const element = document.getElementById(key);
       if (element) {
