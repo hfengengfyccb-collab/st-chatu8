@@ -8840,6 +8840,169 @@ function getsdAuth() {
 //   "用户名:密码"  -> Basic base64(user:pass)
 //   "Basic xxx" / "Bearer xxx" -> 原样使用
 //   其它非空字符串 -> 当作 Bearer token
+function getComfyAuthRaw() {
+  const raw = extension_settings3[extensionName]?.comfyui_auth;
+  return typeof raw === "string" ? raw.trim() : "";
+}
+// 把 Authorization 值反解成用户名/密码，用于弹窗回填
+function parseComfyAuth(raw) {
+  const value = (raw || "").trim();
+  if (!value) return { user: "", pass: "" };
+  if (/^Basic\s+/i.test(value)) {
+    try {
+      const decoded = atob(value.replace(/^Basic\s+/i, ""));
+      const idx = decoded.indexOf(":");
+      return idx >= 0 ? { user: decoded.slice(0, idx), pass: decoded.slice(idx + 1) } : { user: decoded, pass: "" };
+    } catch (err) {
+      return { user: "", pass: "" };
+    }
+  }
+  if (value.includes(":")) {
+    const idx = value.indexOf(":");
+    return { user: value.slice(0, idx), pass: value.slice(idx + 1) };
+  }
+  return { user: "", pass: "" };
+}
+// 当前 ComfyUI 地址的 origin，用于弹窗展示
+function getComfyOriginLabel() {
+  const raw = (extension_settings3[extensionName]?.comfyuiUrl || "").trim();
+  if (!raw) return "ComfyUI";
+  try {
+    return new URL(/^https?:\/\//i.test(raw) ? raw : `http://${raw}`).origin;
+  } catch (err) {
+    return raw;
+  }
+}
+// 保存认证信息：写内存设置 + 通过酒馆上下文落盘，然后刷新设置页状态文字
+function saveComfyAuth(value) {
+  try {
+    if (!extension_settings3[extensionName]) extension_settings3[extensionName] = {};
+    extension_settings3[extensionName].comfyui_auth = value || "";
+    const ctx = window.SillyTavern && typeof window.SillyTavern.getContext === "function" ? window.SillyTavern.getContext() : null;
+    if (ctx && typeof ctx.saveSettingsDebounced === "function") {
+      ctx.saveSettingsDebounced();
+    } else if (typeof window.saveSettingsDebounced === "function") {
+      window.saveSettingsDebounced();
+    }
+  } catch (err) {
+    console.warn("[ComfyUI Auth] 保存认证信息失败:", err);
+  }
+  updateComfyAuthStatus();
+}
+// 刷新设置页上的登录状态文字（元素不存在时静默跳过）
+function updateComfyAuthStatus() {
+  const el = document.getElementById("comfyui_auth_status");
+  if (!el) return;
+  const raw = getComfyAuthRaw();
+  if (!raw) {
+    el.textContent = "未登录";
+    el.style.color = "var(--SmartThemeEmColor, #999)";
+    return;
+  }
+  const parsed = parseComfyAuth(raw);
+  if (parsed.user) {
+    el.textContent = `已登录：${parsed.user}`;
+  } else {
+    el.textContent = "已配置 Token";
+  }
+  el.style.color = "var(--SmartThemeQuoteColor, #46a758)";
+}
+// ComfyUI 登录弹窗：没有浏览器原生认证框可调，这里自己弹一个。
+// 返回 Promise<boolean>，true 表示用户提交了账号密码（已写入设置）。
+function showComfyAuthDialog(reason) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById("chatu8-comfy-auth-overlay");
+    if (existing) existing.remove();
+    const current = parseComfyAuth(getComfyAuthRaw());
+    const target = getComfyOriginLabel();
+    const overlay = document.createElement("div");
+    overlay.id = "chatu8-comfy-auth-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);";
+    const panel = document.createElement("div");
+    panel.style.cssText = "width:min(92vw,360px);border-radius:12px;padding:18px 18px 14px;background:var(--SmartThemeBlurTintColor,#fff);color:var(--SmartThemeBodyColor,#222);box-shadow:0 12px 40px rgba(0,0,0,0.35);border:1px solid rgba(128,128,128,0.35);font-size:14px;";
+    panel.innerHTML = [
+      '<div style="font-weight:600;font-size:15px;margin-bottom:6px;">连接 ComfyUI 需要登录</div>',
+      `<div style="font-size:12px;opacity:.75;margin-bottom:12px;word-break:break-all;">${target}</div>`,
+      reason ? `<div style="font-size:12px;color:#e08a00;margin-bottom:10px;">${reason}</div>` : "",
+      '<label style="display:block;font-size:12px;margin-bottom:4px;opacity:.8;">用户名</label>',
+      `<input id="chatu8-auth-user" type="text" autocomplete="username" value="${current.user.replace(/"/g, "&quot;")}" style="width:100%;box-sizing:border-box;padding:8px 10px;margin-bottom:10px;border-radius:8px;border:1px solid rgba(128,128,128,0.45);background:transparent;color:inherit;font-size:14px;">`,
+      '<label style="display:block;font-size:12px;margin-bottom:4px;opacity:.8;">密码</label>',
+      `<input id="chatu8-auth-pass" type="password" autocomplete="current-password" value="${current.pass.replace(/"/g, "&quot;")}" style="width:100%;box-sizing:border-box;padding:8px 10px;margin-bottom:6px;border-radius:8px;border:1px solid rgba(128,128,128,0.45);background:transparent;color:inherit;font-size:14px;">`,
+      '<div id="chatu8-auth-error" style="font-size:12px;color:#e5484d;min-height:16px;margin-bottom:6px;"></div>',
+      '<div style="font-size:11px;opacity:.6;margin-bottom:12px;">凭据只保存在本地酒馆设置里，不会上传。</div>',
+      '<div style="display:flex;gap:8px;justify-content:flex-end;">',
+      '<button id="chatu8-auth-cancel" type="button" style="padding:7px 14px;border-radius:8px;border:1px solid rgba(128,128,128,0.45);background:transparent;color:inherit;cursor:pointer;">取消</button>',
+      '<button id="chatu8-auth-ok" type="button" style="padding:7px 14px;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer;">登录</button>',
+      "</div>"
+    ].join("");
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    const userInput = panel.querySelector("#chatu8-auth-user");
+    const passInput = panel.querySelector("#chatu8-auth-pass");
+    const errorEl = panel.querySelector("#chatu8-auth-error");
+    const cleanup = () => {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+    };
+    const finish = (ok) => {
+      cleanup();
+      resolve(ok);
+    };
+    const submit = () => {
+      const user = userInput.value.trim();
+      const pass = passInput.value;
+      if (!user) {
+        errorEl.textContent = "请输入用户名";
+        userInput.focus();
+        return;
+      }
+      saveComfyAuth(pass ? `${user}:${pass}` : user);
+      finish(true);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+      if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); submit(); }
+    };
+    panel.querySelector("#chatu8-auth-ok").addEventListener("click", submit);
+    panel.querySelector("#chatu8-auth-cancel").addEventListener("click", () => finish(false));
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(false);
+    });
+    document.addEventListener("keydown", onKey, true);
+    setTimeout(() => userInput.focus(), 30);
+  });
+}
+window.__chatu8ShowComfyAuthDialog = showComfyAuthDialog;
+// 设置页按钮：把原来的输入框换成"账号密码登录"，点击时弹窗
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!target || !target.id) return;
+  if (target.id === "comfyui_auth_login") {
+    event.preventDefault();
+    showComfyAuthDialog("");
+  } else if (target.id === "comfyui_auth_clear") {
+    event.preventDefault();
+    saveComfyAuth("");
+  } else {
+    updateComfyAuthStatus();
+  }
+});
+// 设置页是动态插入的，元素一出现就同步一次登录状态
+try {
+  let __statusSyncQueued = false;
+  const __statusObserver = new MutationObserver(() => {
+    if (__statusSyncQueued) return;
+    if (!document.getElementById("comfyui_auth_status")) return;
+    __statusSyncQueued = true;
+    requestAnimationFrame(() => {
+      __statusSyncQueued = false;
+      updateComfyAuthStatus();
+    });
+  });
+  __statusObserver.observe(document.body, { childList: true, subtree: true });
+} catch (err) {
+  // 观察器创建失败不影响功能
+}
 function getComfyAuthValue() {
   const raw = extension_settings3[extensionName]?.comfyui_auth;
   if (!raw || typeof raw !== "string") return "";
@@ -8876,27 +9039,79 @@ function collectComfyOrigins() {
 // 给所有发往 ComfyUI 的请求自动补 Authorization 头。
 // 用统一包装而不是逐个调用点修改，是为了覆盖 /prompt、/upload/image、/history、/queue、
 // /mgpu/*、/api/interrupt 等全部现有接口，以及插件将来新增的接口。
+// 另外：遇到 401 或者根本没带凭据就失败时，弹一次登录窗，填完自动重试。
 const __chatu8OriginalFetch = window.fetch.bind(window);
-window.fetch = function chatu8FetchWithComfyAuth(input, init) {
+const __comfyAuthPromptedOrigins = /* @__PURE__ */ new Set();
+let __comfyAuthPromptOpen = false;
+// 只对同一个 origin 弹一次，避免后台轮询反复弹窗
+async function __maybePromptComfyAuth(origin) {
+  if (__comfyAuthPromptOpen) return false;
+  if (__comfyAuthPromptedOrigins.has(origin)) return false;
+  const rawAuth = getComfyAuthRaw();
+  const looksLikeCredentials = rawAuth.includes(":") || /^Basic\s+/i.test(rawAuth);
+  // 配的是 token/Bearer 就别弹账号密码窗了，弹了也没用
+  if (rawAuth && !looksLikeCredentials) return false;
+  __comfyAuthPromptedOrigins.add(origin);
+  __comfyAuthPromptOpen = true;
   try {
-    const authValue = getComfyAuthValue();
-    if (authValue) {
-      const rawUrl = typeof input === "string" ? input : input && input.url ? input.url : "";
-      if (rawUrl) {
-        const absoluteUrl = new URL(rawUrl, window.location.href);
-        if (collectComfyOrigins().has(absoluteUrl.origin)) {
-          const headers = new Headers(
-            (init && init.headers) || (input && input.headers) || void 0
-          );
-          if (!headers.has("Authorization")) headers.set("Authorization", authValue);
-          init = Object.assign({}, init, { headers });
-        }
-      }
-    }
-  } catch (err) {
-    // 任何异常都退回原始请求，避免影响其它扩展
+    return await showComfyAuthDialog("需要用户名和密码才能连接");
+  } finally {
+    __comfyAuthPromptOpen = false;
   }
-  return __chatu8OriginalFetch(input, init);
+}
+// 判断这次调用是不是发往 ComfyUI 的
+function __resolveComfyTarget(input) {
+  try {
+    const rawUrl = typeof input === "string" ? input : input && input.url ? input.url : "";
+    if (!rawUrl) return null;
+    const absoluteUrl = new URL(rawUrl, window.location.href);
+    return collectComfyOrigins().has(absoluteUrl.origin) ? absoluteUrl : null;
+  } catch (err) {
+    return null;
+  }
+}
+// 发送请求并在必要时补认证头；authValue 为空时用设置里现存的凭据
+function __sendComfyRequest(input, init, authValue) {
+  const value = authValue === void 0 ? getComfyAuthValue() : authValue;
+  let options = init;
+  if (value) {
+    try {
+      const headers = new Headers((init && init.headers) || (input && input.headers) || void 0);
+      if (!headers.has("Authorization")) headers.set("Authorization", value);
+      options = Object.assign({}, init, { headers });
+    } catch (err) {
+      options = init;
+    }
+  }
+  return __chatu8OriginalFetch(input, options);
+}
+// Request 对象带 body 时不能重发（body 已被消费），只有字符串 URL 才允许重试
+function __canRetryComfyRequest(input) {
+  if (typeof input === "string") return true;
+  if (input && typeof input === "object" && input.url) return false;
+  return false;
+}
+window.fetch = async function chatu8FetchWithComfyAuth(input, init) {
+  const target = __resolveComfyTarget(input);
+  if (!target) {
+    return __chatu8OriginalFetch(input, init);
+  }
+  let response;
+  try {
+    response = await __sendComfyRequest(input, init);
+  } catch (networkError) {
+    // 跨域时预检失败也表现为网络错误：没配凭据就弹一次登录窗
+    if (!getComfyAuthValue() && __canRetryComfyRequest(input)) {
+      const filled = await __maybePromptComfyAuth(target.origin);
+      if (filled) return __sendComfyRequest(input, init);
+    }
+    throw networkError;
+  }
+  if (response && response.status === 401 && __canRetryComfyRequest(input)) {
+    const filled = await __maybePromptComfyAuth(target.origin);
+    if (filled) return __sendComfyRequest(input, init);
+  }
+  return response;
 };
 async function getSDMode(sdurl) {
   try {

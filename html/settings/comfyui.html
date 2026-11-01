@@ -284,8 +284,12 @@
             </div>
         </div>
         <div class="st-chatu8-field">
-            <label for="comfyui_auth">API 认证 (留空表示无需认证)</label>
-            <input type="password" id="comfyui_auth" class="st-chatu8-text-input" placeholder="用户名:密码 或 Bearer token" autocomplete="off">
+            <label>API 认证 (需要登录的 ComfyUI)</label>
+            <div class="st-chatu8-input-group">
+                <span id="comfyui_auth_status" class="st-chatu8-auth-status">未登录</span>
+                <button id="comfyui_auth_login" class="st-chatu8-btn">账号密码登录</button>
+                <button id="comfyui_auth_clear" class="st-chatu8-btn">清除</button>
+            </div>
         </div>
         <div class="st-chatu8-field">
             <label for="comfyui_max_concurrency">并发请求上限 (最大10并发)</label>
